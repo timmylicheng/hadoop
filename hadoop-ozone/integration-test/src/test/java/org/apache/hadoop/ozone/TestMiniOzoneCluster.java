@@ -20,6 +20,7 @@ package org.apache.hadoop.ozone;
 
 import static org.apache.hadoop.hdds.protocol.DatanodeDetails.Port;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HOST_NAME_KEY;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.DFS_CONTAINER_RATIS_IPC_RANDOM_PORT;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -38,6 +39,7 @@ import java.util.List;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdds.HddsConfigKeys;
+import org.apache.hadoop.hdds.HddsUtils;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
@@ -53,15 +55,13 @@ import org.apache.hadoop.ozone.container.common.statemachine.EndpointStateMachin
 import org.apache.hadoop.ozone.container.ozoneimpl.TestOzoneContainer;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.hadoop.test.TestGenericTestUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.*;
 import org.yaml.snakeyaml.Yaml;
 
 /**
  * Test cases for mini ozone cluster.
  */
+
 public class TestMiniOzoneCluster {
 
   private static MiniOzoneCluster cluster;
@@ -316,5 +316,110 @@ public class TestMiniOzoneCluster {
       Assert.assertEquals(EndpointStateMachine.EndPointStates.HEARTBEAT,
           endpoint.getState());
     }
+  }
+
+  /**
+   * Test that DN ip address change won't block SCM start.
+   * @throws Exception
+   */
+  @Test (timeout = 300_000)
+  public void testIPChangeWhenDNRestart() throws Exception {
+
+    int numberOfNodes = 1;
+    cluster = MiniOzoneCluster.newBuilder(conf)
+            .setNumDatanodes(numberOfNodes)
+            .build();
+    cluster.waitForClusterToBeReady();
+    List<HddsDatanodeService> datanodes = cluster.getHddsDatanodes();
+    assertEquals(numberOfNodes, datanodes.size());
+
+    for(HddsDatanodeService dn : datanodes) {
+      // Create a single member pipe line
+      List<DatanodeDetails> dns = new ArrayList<>();
+      dns.add(dn.getDatanodeDetails());
+      Pipeline pipeline = Pipeline.newBuilder()
+              .setState(Pipeline.PipelineState.OPEN)
+              .setId(PipelineID.randomId())
+              .setType(HddsProtos.ReplicationType.STAND_ALONE)
+              .setFactor(HddsProtos.ReplicationFactor.ONE)
+              .setNodes(dns)
+              .build();
+
+      // Verify client is able to connect to the container
+      try (XceiverClientGrpc client = new XceiverClientGrpc(pipeline, conf)) {
+        client.connect();
+        assertTrue(client.isConnected(pipeline.getFirstNode()));
+      }
+    }
+
+    // Stop the SCM
+    StorageContainerManager scm = cluster.getStorageContainerManager();
+    scm.stop();
+
+    cluster.shutdownHddsDatanode(0);
+    // TODO mock and change IP address in DataNodeDetails
+    String newIP = "123.234.345.456";
+
+    HddsDatanodeService datanodeService = datanodes.get(numberOfNodes - 1);
+    conf.set(DFS_DATANODE_HOST_NAME_KEY, newIP);
+    String ip = HddsUtils.getHostName(conf);
+    assertEquals(ip, newIP);
+//    DatanodeDetails newDatanodeDetails = datanodeService.getDatanodeDetails();
+//    newDatanodeDetails.setIpAddress(newIP);
+//    PowerMockito.stub(PowerMockito.method(HddsUtils.class,
+//            "getIpAddressByHostName",String.class))
+//            .toReturn(newIP);
+//    String hostname = HddsUtils.getHostName(conf);
+//    String ip = InetAddress.getByName(hostname).getHostAddress();
+
+    // Restart DN
+    cluster.restartHddsDatanode(0, false);
+
+    // DN should be in GETVERSION state till the SCM is restarted.
+    // Check DN endpoint state for 20 seconds
+    DatanodeStateMachine dnStateMachine = cluster.getHddsDatanodes().get(0)
+            .getDatanodeStateMachine();
+    for (int i = 0; i < 20; i++) {
+      for (EndpointStateMachine endpoint :
+              dnStateMachine.getConnectionManager().getValues()) {
+        Assert.assertEquals(
+                EndpointStateMachine.EndPointStates.GETVERSION,
+                endpoint.getState());
+      }
+      Thread.sleep(1000);
+    }
+
+    // DN should successfully register with the SCM after SCM is restarted.
+    // Restart the SCM
+    cluster.restartStorageContainerManager(true);
+    // Wait for DN to register
+    cluster.waitForClusterToBeReady();
+    // DN should be in HEARTBEAT state after registering with the SCM
+    for (EndpointStateMachine endpoint :
+            dnStateMachine.getConnectionManager().getValues()) {
+      Assert.assertEquals(EndpointStateMachine.EndPointStates.HEARTBEAT,
+              endpoint.getState());
+    }
+
+    // Verify client server connection
+    for(HddsDatanodeService dn : datanodes) {
+      // Create a single member pipe line
+      List<DatanodeDetails> dns = new ArrayList<>();
+      dns.add(dn.getDatanodeDetails());
+      Pipeline pipeline = Pipeline.newBuilder()
+              .setState(Pipeline.PipelineState.OPEN)
+              .setId(PipelineID.randomId())
+              .setType(HddsProtos.ReplicationType.STAND_ALONE)
+              .setFactor(HddsProtos.ReplicationFactor.ONE)
+              .setNodes(dns)
+              .build();
+
+      // Verify client is able to connect to the container
+      try (XceiverClientGrpc client = new XceiverClientGrpc(pipeline, conf)) {
+        client.connect();
+        assertTrue(client.isConnected(pipeline.getFirstNode()));
+      }
+    }
+
   }
 }

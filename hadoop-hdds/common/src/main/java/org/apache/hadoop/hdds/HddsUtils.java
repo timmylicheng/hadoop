@@ -22,6 +22,7 @@ import javax.management.ObjectName;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.util.Calendar;
@@ -354,6 +355,17 @@ public final class HddsUtils {
       name = DNS.getDefaultHost(dnsInterface, nameServer, fallbackToHosts);
     }
     return name;
+  }
+
+  /**
+   * Returns Ip address by given hostname
+   * @param hostname
+   * @return Ip address corresponding to input hostname
+   * @throws UnknownHostException
+   */
+  public static String getIpAddressByHostName(String hostname)
+          throws UnknownHostException{
+    return InetAddress.getByName(hostname).getHostAddress();
   }
 
   /**

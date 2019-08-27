@@ -168,20 +168,30 @@ public class HddsDatanodeService extends GenericCli implements ServicePlugin {
     start();
   }
 
+  @VisibleForTesting
+  public DatanodeDetails SetupDatanodeDetails(DatanodeDetails datanodeDetails, boolean passthru)
+          throws IOException{
+    if (!passthru || datanodeDetails == null) {
+      String hostname = HddsUtils.getHostName(conf);
+      String ip = HddsUtils.getIpAddressByHostName(hostname);
+      datanodeDetails = initializeDatanodeDetails();
+      datanodeDetails.setHostName(hostname);
+      datanodeDetails.setIpAddress(ip);
+    }
+
+    TracingUtil.initTracing(
+            "HddsDatanodeService." + datanodeDetails.getUuidString()
+                    .substring(0, 8));
+    LOG.info("HddsDatanodeService host:{} ip:{}", datanodeDetails.getHostName(), datanodeDetails.getIpAddress());
+    return datanodeDetails;
+  }
+
   public void start() {
     OzoneConfiguration.activate();
     HddsUtils.initializeMetrics(conf, "HddsDatanode");
     if (HddsUtils.isHddsEnabled(conf)) {
       try {
-        String hostname = HddsUtils.getHostName(conf);
-        String ip = InetAddress.getByName(hostname).getHostAddress();
-        datanodeDetails = initializeDatanodeDetails();
-        datanodeDetails.setHostName(hostname);
-        datanodeDetails.setIpAddress(ip);
-        TracingUtil.initTracing(
-            "HddsDatanodeService." + datanodeDetails.getUuidString()
-                .substring(0, 8));
-        LOG.info("HddsDatanodeService host:{} ip:{}", hostname, ip);
+        datanodeDetails = SetupDatanodeDetails(datanodeDetails, false);
         // Authenticate Hdds Datanode service if security is enabled
         if (OzoneSecurityUtil.isSecurityEnabled(conf)) {
           component = "dn-" + datanodeDetails.getUuidString();
@@ -199,7 +209,7 @@ public class HddsDatanodeService extends GenericCli implements ServicePlugin {
             UserGroupInformation.setConfiguration(conf);
 
             SecurityUtil.login(conf, DFSConfigKeys.DFS_DATANODE_KEYTAB_FILE_KEY,
-                DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY, hostname);
+                DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY, datanodeDetails.getHostName());
           } else {
             throw new AuthenticationException(SecurityUtil.
                 getAuthenticationMethod(conf) + " authentication method not " +
